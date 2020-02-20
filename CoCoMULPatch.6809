@@ -1,0 +1,154 @@
+;*************************************************
+;* BASIC speedup patch for TRS-80 Color Computer 3
+;* (C) 2018 James Diffendaffer
+;* Version: 0.1
+;*  This is a beta test version
+;*************************************************
+
+#define MATHTEMP	0
+#define TEMPM		2
+#define TEMPM2		6
+#define	FP0EXP		$4F
+#define	FPA0		$50
+#define FPA1		$
+#define FPA2		$
+
+#define FREESPACE	$FA0C					; empty space?
+	
+	pshs	a,b,x,u					; preserve registers
+	
+	; copy floating point multiply and ASCII <> Float patches to RAM
+	ldx		#patch1					; POINT X TO patch1 SOURCE DATA
+	ldu		#FREESPACE				; POINT U TO RAM DESTINATION
+	ldb		#endpatch-patch1		; Size of 1st patch
+	jsr		>LA59A					; Move patch to RAM
+	
+	; copy CHRGET CHRGOT patch to RAM
+	ldx		#patch2					; POINT X TO patch2 SOURCE DATA
+	ldu		#00aa					; POINT U TO RAM DESTINATION
+	ldb		#endpatch-patch1		; Size of 1st patch
+	jsr		>LA59A					; Move patch to RAM
+
+	; make ROM multiply jump to patch multiply
+	lda								; jmp opcode
+	sta								; store at 1st address of multiply in ROM
+	sta								; store at 1st address of  /10 in ASCII to Float code
+	ldd								; address of new multiply
+	std								; store at 2nd address of multiply in ROM
+	ldd								; address of new /10  ( * 1/10)
+	std								; store at 2nd address of ROM function	
+	
+	pul		a,b,x,u					; restore registers
+	rts								; return
+
+
+	; start of patch code
+	org		$B4CE
+	lbra	patch2
+	org		$BB03						; address of multiply code
+	lbra	patch1						; call the patch
+
+
+patch1:
+	leas	-8,s				; reserve space on the stack
+	stb		MATHTEMP,s			; save number to multiply by from FPA0
+
+	; Multiply bytes in FPA1 by MATHTEMP
+	; multiply 4th byte of mantissa
+	;  B already contains the multiplier
+	lda		FPA1+3
+	mul
+	pshs	d					;		TEMPM+2,s			; save it in TEMP Mantissa
+
+	; multiply 2nd byte of mantissa
+	ldb		MATHTEMP,s
+	lda		FPA1+1
+	mul
+;	std		TEMPM,s				; more saving.  
+	pshs	d
+	
+	; TEMPM is now set up to add in 3rd byte with
+	; the MSB of the 4th and LSB of 2nd byte multiplies
+	; multiply 1st byte of mantissa
+	ldb		MATHTEMP,s
+	lda		FPA1
+	mul
+	pshs	d			;		TEMPM2,s			; and still more saving
+
+	; multiply 3rd byte of mantissa
+	; we do this last so the result can be immidately used below
+	ldb		MATHTEMP,s
+	lda		FPA1+2
+	mul
+		
+	; add multiply results together
+	; ... 4th byte of TEMPM is already correct
+	; content of TEMPM is results of 2nd & results of 4th
+	; simplifies adding in results of 3rd
+	addd	TEMPM+1,s			; add low byte and high byte from first 2 MULs above
+	std		TEMPM+1,s			; save it
+	
+	ldd		TEMPM2,s			; grab 1st byte MUL result
+	adcb	TEMPM,s				; add carry from 2nd
+	adca	#0					; add carry from previous instruction
+	stb		TEMPM,s				; save it
+	sta		MATHTEMP,s			; save the carry from the last add
+
+	; add results of multiply to FPA2
+	ldd		TEMPM+2,s			; get lowest 2 bytes from multiply
+	addd	FPA2+2
+	std		FPA2+3				; shift 8 bits to the right as we go and store the 2nd byte in FPSBYT
+	ldd		TEMPM,s				; get first 2 bytes from multiply
+	adcb	FPA2+1				; add first 2 bytes of Mantissa
+	adca	FPA2				; ...
+	std		FPA2+1				; save byte #2 & #3 of result
+	lda		MATHTEMP,s			; get the new most significant BYTE
+	adca	#0					; add in the carry
+	sta		FPA2				; save it!
+	
+	leas	#8,s				; restore stack
+	rts  						; return to original caller
+
+
+	
+IFPTEN		fcb		$7D,$4D,$CC,$CC,$CD	; 1.0/10.0
+
+;* DIVIDE FPA0 BY 10 using multiply by 1/10
+PATCH2
+	JSR		>LBC5F					; MOVE FPA0 TO FPA1
+	LDX		#IFPTEN					; POINT TO FLOATING POINT CONSTANT 1/10
+	CLRB							; ZERO MANTISSA SIGN BYTE
+LBB89
+	STB		RESSGN					; STORE THE QUOTIENT MANTISSA SIGN BYTE
+	JSR		>LBC14					; UNPACK AN FP NUMBER FROM (X) INTO FPA0
+	lbra	FPMULT					; Perform the Divide
+endpatch1:
+
+;chrget is at $9f
+;CHRGET
+;		INC		CHARAD+1			;9c-9d
+		bra		PARSER
+;		BNE		LA123				;9e-9f
+;		INC		CHARAD				;a0-a1
+        INC     CHARAD+1
+;CHRGOT
+;LA123	LDA		>0000				;a2-a4
+        bra		CHARAD
+;jump to ROM is at $a4
+;		JMP		>BROMHK				;a5-a7
+;		bra		$F3
+
+		org		$F3
+PATCH2:
+CHRGET
+        inc		CHARAD+2
+		beq		CHRGOT-2
+CHARAD
+		lda		>0000
+		bcs		PARSER2
+		rts
+PARSER2
+		jmp		>BROMHK+4
+endpatch2
+	end
+	
